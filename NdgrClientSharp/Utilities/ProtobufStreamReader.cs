@@ -14,17 +14,18 @@ namespace NdgrClientSharp.Utilities
             _bufferStream.Write(chunk, 0, chunk.Length);
         }
 
-        private (int offset, int result)? ReadVarint()
+        private (int offset, int result)? ReadVariant()
         {
             var offset = 0;
             var result = 0;
             var shift = 0;
 
             _bufferStream.Position = 0;
-            int b;
 
-            while ((b = _bufferStream.ReadByte()) != -1)
+            while (offset < 5)
             {
+                var b = _bufferStream.ReadByte();
+                if (b == -1) return null;
                 result |= (b & 0x7F) << shift;
                 offset++;
                 shift += 7;
@@ -35,29 +36,31 @@ namespace NdgrClientSharp.Utilities
                 }
             }
 
+            // 読み取り失敗, 例外を通知したところでハンドリングのしようがないので握りつぶしてnullを返す
             return null;
         }
 
         public byte[]? UnshiftChunk()
         {
-            var varintResult = ReadVarint();
-            if (varintResult == null) return null;
+            var readVariant = ReadVariant();
+            if (readVariant == null) return null;
 
-            var (offset, varint) = varintResult.Value;
-            if (offset + varint > _bufferStream.Length)
+            var (offset, variant) = readVariant.Value;
+
+            if (offset + variant > _bufferStream.Length)
             {
                 return null;
             }
 
-            var message = new byte[varint];
+            var message = new byte[variant];
 
             // Read the message bytes directly into the array
             _bufferStream.Position = offset;
-            _bufferStream.Read(message, 0, varint);
+            _bufferStream.Read(message, 0, variant);
 
             // Shift the buffer content
-            var remainingBuffer = new byte[_bufferStream.Length - offset - varint];
-            _bufferStream.Position = offset + varint;
+            var remainingBuffer = new byte[_bufferStream.Length - offset - variant];
+            _bufferStream.Position = offset + variant;
             _bufferStream.Read(remainingBuffer, 0, remainingBuffer.Length);
 
             // Reset and refill the stream with the remaining data
