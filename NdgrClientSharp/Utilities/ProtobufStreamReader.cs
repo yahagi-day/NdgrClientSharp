@@ -14,7 +14,9 @@ namespace NdgrClientSharp.Utilities
             _bufferStream.Write(chunk, 0, chunk.Length);
         }
 
-        private (int offset, int result)? ReadVariant()
+        //Googleの公式実装を参考
+        // https://github.com/protocolbuffers/protobuf/blob/384fabf35a9b5d1f1502edaf9a139b1f51551a01/csharp/src/Google.Protobuf/ParsingPrimitives.cs#L720-L732
+        private (int offset, int result)? ReadVarint()
         {
             var offset = 0;
             var result = 0;
@@ -22,27 +24,46 @@ namespace NdgrClientSharp.Utilities
 
             _bufferStream.Position = 0;
 
-            while (offset < 5)
+            //Byteを読み込んで先頭が1かチェック(1bitから32bitの範囲)
+            for (; shift < 32; shift += 7)
             {
                 var b = _bufferStream.ReadByte();
-                if (b == -1) return null;
+                {
+                    if (b == -1)
+                    {
+                        return null;
+                    }
+                }
                 result |= (b & 0x7F) << shift;
                 offset++;
-                shift += 7;
+                
+                if ((b & 0x80) == 0)
+                {
+                    return (offset, result);
+                }
+            }
+            //ない場合は64bitまで読み範囲内に0x80があれば1~32bitを渡す
+            for (; shift < 64; shift += 7)
+            {
+                var b = _bufferStream.ReadByte();
+                if (b == -1)
+                {
+                    return null;
+                }
 
                 if ((b & 0x80) == 0)
                 {
                     return (offset, result);
                 }
             }
-
-            // 読み取り失敗, 例外を通知したところでハンドリングのしようがないので握りつぶしてnullを返す
+            
+            //ない場合は不正な値 例外を通知したところでハンドリングのしようがないので握りつぶしてnullを返す
             return null;
         }
 
         public byte[]? UnshiftChunk()
         {
-            var readVariant = ReadVariant();
+            var readVariant = ReadVarint();
             if (readVariant == null) return null;
 
             var (offset, variant) = readVariant.Value;
