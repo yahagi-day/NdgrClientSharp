@@ -240,7 +240,7 @@ namespace NdgrClientSharp
                     {
                         _messageSubject.OnErrorResume(ex);
                     }
-                    
+
                     // 受信バイトがおかしい場合はリトライ
                     await Task.Delay(RetryInterval, ct);
                 }
@@ -375,7 +375,7 @@ namespace NdgrClientSharp
                     {
                         _messageSubject.OnErrorResume(e);
                     }
-                    
+
                     // バイト列の破損の可能性があるのでリトライ
                     Reconnect();
                 }
@@ -397,77 +397,92 @@ namespace NdgrClientSharp
 
         private async ValueTask FetchSegmentAsync(MessageSegment segment, CancellationToken ct = default)
         {
-            try
+            var tryCount = 0;
+
+            while (++tryCount <= 2)
             {
-                _fetchingSegmentCount++;
-
-                HashSet<string> hashSet;
-
-                lock (_receivedMessages)
+                try
                 {
-                    if (!_receivedMessages.TryGetValue(segment.Uri, out var set))
-                    {
-                        hashSet = new HashSet<string>();
-                        _receivedMessages.Add(segment.Uri, hashSet);
-                    }
-                    else
-                    {
-                        hashSet = set;
-                    }
-                }
+                    _fetchingSegmentCount++;
 
-                var uri = segment.Uri;
-                await foreach (var chunkedMessage in _ndgrApiClient.FetchChunkedMessagesAsync(uri, ct))
-                {
-                    lock (_gate)
+                    HashSet<string> hashSet;
+
+                    lock (_receivedMessages)
                     {
-                        var meta = chunkedMessage.Meta;
-                        if (meta != null)
+                        if (!_receivedMessages.TryGetValue(segment.Uri, out var set))
                         {
-                            // Metaが存在する場合は重複チェック
-                            if (hashSet.Add(chunkedMessage.Meta.Id))
-                            {
-                                _messageSubject.OnNext(chunkedMessage);
-                            }
+                            hashSet = new HashSet<string>();
+                            _receivedMessages.Add(segment.Uri, hashSet);
                         }
                         else
                         {
-                            // Metaが存在しない場合は素通し
-                            _messageSubject.OnNext(chunkedMessage);
+                            hashSet = set;
                         }
                     }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (NdgrApiClientByteReadException e)
-            {
-                lock (_gate)
-                {
-                    if (!_messageSubject.IsDisposed)
+
+                    var uri = segment.Uri;
+
+                    await foreach (var chunkedMessage in _ndgrApiClient.FetchChunkedMessagesAsync(uri, ct))
                     {
-                        _messageSubject.OnErrorResume(e);
+                        lock (_gate)
+                        {
+                            var meta = chunkedMessage.Meta;
+                            if (meta != null)
+                            {
+                                // Metaが存在する場合は重複チェック
+                                if (hashSet.Add(chunkedMessage.Meta.Id))
+                                {
+                                    _messageSubject.OnNext(chunkedMessage);
+                                }
+                            }
+                            else
+                            {
+                                // Metaが存在しない場合は素通し
+                                _messageSubject.OnNext(chunkedMessage);
+                            }
+                        }
                     }
-                    Reconnect();
+
+                    return;
                 }
-            }
-            catch (WebException w) when (w.Status == WebExceptionStatus.RequestCanceled)
-            {
-            }
-            catch (Exception e)
-            {
-                lock (_gate)
+                catch (OperationCanceledException)
                 {
-                    if (!_messageSubject.IsDisposed)
-                    {
-                        _messageSubject.OnErrorResume(e);
-                    }
+                    throw;
                 }
-            }
-            finally
-            {
-                _fetchingSegmentCount--;
+                catch (NdgrApiClientByteReadException e)
+                {
+                    lock (_gate)
+                    {
+                        if (!_messageSubject.IsDisposed)
+                        {
+                            _messageSubject.OnErrorResume(e);
+                        }
+                    }
+
+                    // Segmentのバイト列が破損している可能性があるので少し待ってリトライ
+                    await Task.Delay(RetryInterval, ct);
+                }
+                catch (WebException w) when (w.Status == WebExceptionStatus.RequestCanceled)
+                {
+                    return;
+                }
+                catch (Exception e)
+                {
+                    lock (_gate)
+                    {
+                        if (!_messageSubject.IsDisposed)
+                        {
+                            _messageSubject.OnErrorResume(e);
+                        }
+                    }
+
+                    // その他のエラーはリトライしない
+                    return;
+                }
+                finally
+                {
+                    _fetchingSegmentCount--;
+                }
             }
         }
 
