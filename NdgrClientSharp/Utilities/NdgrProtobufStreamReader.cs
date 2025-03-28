@@ -13,7 +13,17 @@ namespace NdgrClientSharp.Utilities
             _bufferStream.Write(chunk, 0, chunk.Length);
         }
 
-        // 参考: https://github.com/protocolbuffers/protobuf/blob/384fabf35a9b5d1f1502edaf9a139b1f51551a01/csharp/src/Google.Protobuf/ParsingPrimitives.cs#L720-L732
+        /// <summary>
+        /// Varintの読み取り
+        /// バイト列の先頭をVarint（Protocol Buffersの１データサイズの長さ）として読み取る
+        ///
+        /// 参考
+        /// https://protobuf.dev/programming-guides/encoding/
+        /// https://github.com/protocolbuffers/protobuf/blob/384fabf35a9b5d1f1502edaf9a139b1f51551a01/csharp/src/Google.Protobuf/ParsingPrimitives.cs#L720-L73
+        /// This implementation is inspired by the Protocol Buffers library by Google.
+        /// </summary>
+        /// <returns></returns>
+        /// <exception cref="NdgrProtobufStreamReaderException"></exception>
         internal (int shift, uint result)? ReadVarint()
         {
             var result = 0;
@@ -40,7 +50,7 @@ namespace NdgrClientSharp.Utilities
 
             for (; offset < 64; offset += 7)
             {
-                int b = _bufferStream.ReadByte();
+                var b = _bufferStream.ReadByte();
                 if (b == -1)
                 {
                     return null;
@@ -60,7 +70,7 @@ namespace NdgrClientSharp.Utilities
 
         /// <summary>
         /// Bufferの先頭からVarintを読み取り、その値に基づいてバッファからメッセージを取り出す
-        /// falseが返却された場合は、バッファに十分なデータが存在しないことを示す
+        /// falseが返却された場合は、まだ十分なデータを受信仕切っていないことを示す
         /// </summary>
         /// <param name="messageBuffer">戻り値がtrueの場合はProtoBuffのバイナリ列が格納されている</param>
         /// <returns>正常に読み取れたか、読み取れた場合はバイトサイズも返す</returns>
@@ -72,14 +82,18 @@ namespace NdgrClientSharp.Utilities
 
             var (offset, varint) = readVarint.Value;
 
+            // offset : Varint分のバイト数
+            // varint : 実際のProtoBuffのメッセージサイズ
+            // offset + varint : この長さ分のバイト列がProtoBuffとして解釈するために必要
             if (offset + varint > _bufferStream.Length)
             {
+                // まだ十分なデータを受信していない
                 return (false, 0);
             }
 
-            if (varint > messageBuffer.Length)
+            if (offset + varint > messageBuffer.Length)
             {
-                // 渡されたバッファ以上のサイズのメッセージが存在する場合は例外を投げる
+                // messageBufferのサイズが足りない
                 throw new NdgrProtobufStreamReaderException("Message size is too large.");
             }
 
