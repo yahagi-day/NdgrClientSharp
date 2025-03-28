@@ -241,7 +241,8 @@ namespace NdgrClientSharp
                         _messageSubject.OnErrorResume(ex);
                     }
                     
-                    // 受信バイトがおかしい場合は即リトライ
+                    // 受信バイトがおかしい場合はリトライ
+                    await Task.Delay(RetryInterval, ct);
                 }
                 catch (Exception ex)
                 {
