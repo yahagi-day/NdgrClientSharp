@@ -234,6 +234,15 @@ namespace NdgrClientSharp
                         return;
                     }
                 }
+                catch (NdgrApiClientByteReadException ex)
+                {
+                    lock (_gate)
+                    {
+                        _messageSubject.OnErrorResume(ex);
+                    }
+                    
+                    // 受信バイトがおかしい場合は即リトライ
+                }
                 catch (Exception ex)
                 {
                     lock (_gate)
@@ -357,6 +366,19 @@ namespace NdgrClientSharp
                     }
                 }
             }
+            catch (NdgrApiClientByteReadException e)
+            {
+                lock (_gate)
+                {
+                    if (!_messageSubject.IsDisposed)
+                    {
+                        _messageSubject.OnErrorResume(e);
+                    }
+                    
+                    // バイト列の破損の可能性があるのでリトライ
+                    Reconnect();
+                }
+            }
             catch (Exception e)
             {
                 // エラーを発行してDisconnect
@@ -417,6 +439,17 @@ namespace NdgrClientSharp
             }
             catch (OperationCanceledException)
             {
+            }
+            catch (NdgrApiClientByteReadException e)
+            {
+                lock (_gate)
+                {
+                    if (!_messageSubject.IsDisposed)
+                    {
+                        _messageSubject.OnErrorResume(e);
+                    }
+                    Reconnect();
+                }
             }
             catch (WebException w) when (w.Status == WebExceptionStatus.RequestCanceled)
             {
