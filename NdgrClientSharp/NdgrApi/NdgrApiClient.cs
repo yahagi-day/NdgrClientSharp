@@ -65,6 +65,7 @@ namespace NdgrClientSharp.NdgrApi
                 throw new NdgrApiClientHttpException(response.StatusCode);
             }
 
+
             await foreach (var chunk in ReadProtoBuffBytesAsync(await response.Content.ReadAsStreamAsync())
                                .WithCancellation(ct))
             {
@@ -206,6 +207,8 @@ namespace NdgrClientSharp.NdgrApi
             Stream stream,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
+            // 1024byteのバッファを使い回す
+            // 正常に動作している場合はこのサイズで十分足りるはずであり、オーバーする場合は受信したデータが破損している可能性がある
             var messageBuffer = new byte[1024];
 
             using var reader = new NdgrProtobufStreamReader();
@@ -217,10 +220,19 @@ namespace NdgrClientSharp.NdgrApi
 
                 while (true)
                 {
-                    var (isValid, size) = reader.UnshiftChunk(messageBuffer);
-                    if (!isValid)
+                    int size;
+                    try
                     {
-                        break;
+                        bool isValid;
+                        (isValid, size) = reader.UnshiftChunk(messageBuffer);
+                        if (!isValid)
+                        {
+                            break;
+                        }
+                    }
+                    catch (NdgrProtobufStreamReaderException)
+                    {
+                        throw new NdgrApiClientByteReadException("Failed to read varint from the stream.");
                     }
 
                     yield return (messageBuffer, size);
