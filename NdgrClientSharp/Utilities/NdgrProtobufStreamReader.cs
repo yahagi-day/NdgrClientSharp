@@ -8,9 +8,9 @@ namespace NdgrClientSharp.Utilities
     {
         private readonly MemoryStream _bufferStream = new MemoryStream();
 
-        public void AddNewChunk(byte[] chunk)
+        public void AddNewChunk(byte[] chunk, int? length = null)
         {
-            _bufferStream.Write(chunk, 0, chunk.Length);
+            _bufferStream.Write(chunk, 0, length ?? chunk.Length);
         }
 
         /// <summary>
@@ -104,22 +104,14 @@ namespace NdgrClientSharp.Utilities
 
             // Shift the buffer content
             var remainingLength = (int)(_bufferStream.Length - offset - varint);
-            var rentedBuffer = ArrayPool<byte>.Shared.Rent(remainingLength);
+            using var rentedBuffer = new PooledArray<byte>(remainingLength);
 
-            try
-            {
-                _bufferStream.Position = offset + varint;
-                _bufferStream.Read(rentedBuffer, 0, remainingLength);
+            _bufferStream.Position = offset + varint;
+            _bufferStream.Read(rentedBuffer.Array, 0, remainingLength);
 
-                // Reset and refill the stream with the remaining data
-                _bufferStream.SetLength(0);
-                _bufferStream.Write(rentedBuffer, 0, remainingLength);
-            }
-            finally
-            {
-                // Return the rented buffer to the pool
-                ArrayPool<byte>.Shared.Return(rentedBuffer);
-            }
+            // Reset and refill the stream with the remaining data
+            _bufferStream.SetLength(0);
+            _bufferStream.Write(rentedBuffer.Array, 0, remainingLength);
 
             return (true, (int)varint);
         }

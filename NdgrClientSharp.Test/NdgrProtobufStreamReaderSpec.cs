@@ -34,7 +34,7 @@ public class NdgrProtobufStreamReaderSpec
         var result = reader.ReadVarint();
 
         Assert.IsNotNull(result);
-        Assert.AreEqual(expected, result.Value.result);
+        Assert.That(result.Value.result, Is.EqualTo(expected));
     }
 
     [TestCase(((ulong)123456 << 32) + 0u, 0u)]
@@ -54,7 +54,7 @@ public class NdgrProtobufStreamReaderSpec
         var result = reader.ReadVarint();
 
         Assert.IsNotNull(result);
-        Assert.AreEqual(expected, result.Value.result);
+        Assert.That(result.Value.result, Is.EqualTo(expected));
     }
 
     [Test]
@@ -114,8 +114,8 @@ public class NdgrProtobufStreamReaderSpec
         var (isValid, size) = reader.UnshiftChunk(resultBuffer);
 
         Assert.IsTrue(isValid);
-        Assert.AreEqual(expected.Length, size);
-        Assert.AreEqual(expected, resultBuffer[..size]);
+        Assert.That(size, Is.EqualTo(expected.Length));
+        Assert.That(resultBuffer[..size], Is.EqualTo(expected));
     }
 
     [Test]

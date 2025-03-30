@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -176,27 +177,33 @@ namespace NdgrClientSharp.NdgrApi
         /// <summary>
         /// Streamから非同期的に生のバイト配列を読み取る
         /// </summary>
-        private static async IAsyncEnumerable<byte[]> ReadRawBytesAsync(
+        private static async IAsyncEnumerable<PooledBuffer> ReadRawBytesAsync(
             Stream stream,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
-            using var reader = new BinaryReader(stream);
-            var buffer = new byte[2048];
+            var pool = ArrayPool<byte>.Shared;
+
             while (true)
             {
-                var read = await reader.BaseStream.ReadAsync(buffer, 0, buffer.Length, ct);
+                var buffer = pool.Rent(1024);
+                int read;
+                try
+                {
+                    read = await stream.ReadAsync(buffer, 0, buffer.Length, ct);
+                }
+                catch
+                {
+                    pool.Return(buffer);
+                    throw;
+                }
+
                 if (read == 0)
                 {
+                    pool.Return(buffer); 
                     yield break;
                 }
 
-#if NETSTANDARD2_1
-                yield return buffer[..read];
-#else
-                var result = new byte[read];
-                Array.Copy(buffer, result, read);
-                yield return result;
-#endif
+                yield return new PooledBuffer(buffer, read, pool);
             }
         }
 
@@ -207,16 +214,21 @@ namespace NdgrClientSharp.NdgrApi
             Stream stream,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
-            // 1024byteのバッファを使い回す
             // 正常に動作している場合はこのサイズで十分足りるはずであり、オーバーする場合は受信したデータが破損している可能性がある
-            var messageBuffer = new byte[1024];
+            using var messageBuffer = new PooledArray<byte>(1024);
 
             using var reader = new NdgrProtobufStreamReader();
             await foreach (var chunk in ReadRawBytesAsync(stream).WithCancellation(ct))
             {
-                ct.ThrowIfCancellationRequested();
-
-                reader.AddNewChunk(chunk);
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    reader.AddNewChunk(chunk.Array, chunk.Length);
+                }
+                finally
+                {
+                    chunk.Dispose();
+                }
 
                 while (true)
                 {
@@ -224,7 +236,7 @@ namespace NdgrClientSharp.NdgrApi
                     try
                     {
                         bool isValid;
-                        (isValid, size) = reader.UnshiftChunk(messageBuffer);
+                        (isValid, size) = reader.UnshiftChunk(messageBuffer.Array);
                         if (!isValid)
                         {
                             break;
@@ -235,7 +247,7 @@ namespace NdgrClientSharp.NdgrApi
                         throw new NdgrApiClientByteReadException("Failed to read varint from the stream.");
                     }
 
-                    yield return (messageBuffer, size);
+                    yield return (messageBuffer.Array, size);
                 }
             }
         }
