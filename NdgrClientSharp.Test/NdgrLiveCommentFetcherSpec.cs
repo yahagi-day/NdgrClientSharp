@@ -147,6 +147,39 @@ public sealed class NdgrLiveCommentFetcherSpec
         });
     }
 
+    [Test, Timeout(1000)]
+    public void 最初の取得時にメッセージ破損はリトライする()
+    {
+        var apiClientMock = new Mock<INdgrApiClient>();
+
+        var ex = new NdgrApiClientByteReadException("Failed to read varint from the stream.");
+
+        // 呼び出されても例外をなげる
+        apiClientMock
+            .Setup(x =>
+                x.FetchViewAtNowAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Throws(ex);
+
+        var fetcher = new NdgrLiveCommentFetcher(apiClientMock.Object);
+        fetcher.MaxRetryCount = 5;
+        fetcher.RetryInterval = TimeSpan.FromMilliseconds(0);
+
+        // 結果の保持用
+        var list = fetcher.OnMessageReceived.Materialize().ToLiveList();
+
+        // 取得開始
+        fetcher.Connect("");
+        Assert.Multiple(() =>
+        {
+            // OnErrorResumeが発火している
+            Assert.That(list.Count, Is.GreaterThan(1));
+            Assert.That(list.All(x => x.Kind == NotificationKind.OnErrorResume), Is.True);
+
+            // 最終的に切断している
+            Assert.That(fetcher.ConnectionStatus.CurrentValue, Is.EqualTo(ConnectionState.Disconnected));
+        });
+    }
+    
     [Test]
     public void 最初の取得時にその他のエラー時はリトライせずに諦める()
     {
@@ -190,6 +223,76 @@ public sealed class NdgrLiveCommentFetcherSpec
         var count = 0;
 
 
+        apiClientMock
+            .Setup(x =>
+                x.FetchViewAtNowAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(new ValueTask<ChunkedEntry.Types.ReadyForNext>(
+                new ChunkedEntry.Types.ReadyForNext
+                {
+                    At = 0
+                }
+            ));
+
+        // 最初のViewAtの取得で例外
+        apiClientMock
+            .SetupSequence(x => x.FetchViewAtAsync(It.IsAny<string>(), 0, It.IsAny<CancellationToken>()))
+            .Throws(ex)
+            .Returns(Array.Empty<ChunkedEntry>().ToAsyncEnumerable);
+
+        var fetcher = new NdgrLiveCommentFetcher(apiClientMock.Object);
+
+        // 結果の保持用
+        var list = fetcher.OnMessageReceived.Materialize().ToLiveList();
+        var statusList = fetcher.ConnectionStatus.ToLiveList();
+
+        // 取得開始
+        fetcher.Connect("test");
+
+        Assert.Multiple(() =>
+        {
+            // OnErrorResumeが1回発火しているはず
+            Assert.That(list.Count, Is.EqualTo(1));
+            Assert.That(list.All(x => x.Kind == NotificationKind.OnErrorResume), Is.True);
+
+            // それぞれ呼び出されているはず
+            apiClientMock
+                .Verify(
+                    x => x.FetchViewAtNowAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+                    Times.Exactly(2)
+                );
+
+            apiClientMock
+                .Verify(
+                    x => x.FetchViewAtAsync(It.IsAny<string>(), 0, It.IsAny<CancellationToken>()),
+                    Times.Exactly(2)
+                );
+
+
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    // 1回目の接続
+                    ConnectionState.Disconnected,
+                    ConnectionState.Connecting,
+                    ConnectionState.Connected,
+                    // 再接続
+                    ConnectionState.Disconnected,
+                    ConnectionState.Connecting,
+                    ConnectionState.Connected,
+                    ConnectionState.Disconnected
+                }, statusList
+            );
+        });
+    }
+    
+    
+       [Test]
+    public void Viewを連続して取得中にバイトが破損した出た場合はRecconectする()
+    {
+        var apiClientMock = new Mock<INdgrApiClient>();
+
+        var ex = new NdgrApiClientByteReadException("Failed to read varint from the stream.");
+        
         apiClientMock
             .Setup(x =>
                 x.FetchViewAtNowAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
