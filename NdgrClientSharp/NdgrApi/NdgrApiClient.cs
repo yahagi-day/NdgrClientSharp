@@ -65,12 +65,11 @@ namespace NdgrClientSharp.NdgrApi
             {
                 throw new NdgrApiClientHttpException(response.StatusCode);
             }
-
-
+            
             await foreach (var chunk in ReadProtoBuffBytesAsync(await response.Content.ReadAsStreamAsync())
                                .WithCancellation(ct))
             {
-                var message = ParseChunkedEntry(chunk.message, chunk.messageSize);
+                var message = ParseChunkedEntry(chunk);
 
                 // at=nowの場合はほぼ現在時刻のunixtimeが返ってくる
                 return message.Next;
@@ -79,10 +78,16 @@ namespace NdgrClientSharp.NdgrApi
             throw new NdgrApiClientByteReadException("Failed to read bytes from stream.");
         }
 
-        private static ChunkedEntry ParseChunkedEntry(byte[] message, int messageSize)
+        private static ChunkedEntry ParseChunkedEntry(PooledBuffer message)
         {
-            var messageSpan = new ReadOnlySpan<byte>(message, 0, messageSize);
-            return ChunkedEntry.Parser.ParseFrom(messageSpan);
+            try
+            {
+                return ChunkedEntry.Parser.ParseFrom(message.Span);
+            }
+            finally
+            {
+                message.Dispose();
+            }
         }
 
 
@@ -110,7 +115,7 @@ namespace NdgrClientSharp.NdgrApi
             var stream = await response.Content.ReadAsStreamAsync();
             await foreach (var chunk in ReadProtoBuffBytesAsync(stream, ct))
             {
-                var message = ParseChunkedEntry(chunk.message, chunk.messageSize);
+                var message = ParseChunkedEntry(chunk);
                 yield return message;
             }
         }
@@ -127,19 +132,21 @@ namespace NdgrClientSharp.NdgrApi
             [EnumeratorCancellation] CancellationToken token = default)
         {
             var ct = CreateLinkedToken(token);
-
-#if NETSTANDARD2_1
-            await using var response = await _httpClient.GetStreamAsync(apiUri);
-#else
-            using var response = await _httpClient.GetStreamAsync(apiUri);
-#endif
-            await foreach (var chunk in ReadProtoBuffBytesAsync(response, ct))
+            
+            using var response = await _httpClient.GetAsync(apiUri, HttpCompletionOption.ResponseHeadersRead, ct);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new NdgrApiClientHttpException(response.StatusCode);
+            }
+            
+            await foreach (var chunk in ReadProtoBuffBytesAsync(await response.Content.ReadAsStreamAsync(), ct))
             {
                 ct.ThrowIfCancellationRequested();
                 ChunkedMessage message;
                 try
                 {
-                    message = ParseChunkedMessage(chunk.message, chunk.messageSize);
+                    message = ParseChunkedMessage(chunk);
                 }
                 catch
                 {
@@ -151,10 +158,16 @@ namespace NdgrClientSharp.NdgrApi
             }
         }
 
-        private static ChunkedMessage ParseChunkedMessage(byte[] message, int messageSize)
+        private static ChunkedMessage ParseChunkedMessage(PooledBuffer message)
         {
-            var messageSpan = new ReadOnlySpan<byte>(message, 0, messageSize);
-            return ChunkedMessage.Parser.ParseFrom(messageSpan);
+            try
+            {
+                return ChunkedMessage.Parser.ParseFrom(message.Span);
+            }
+            finally
+            {
+                message.Dispose();
+            }
         }
 
 
@@ -185,7 +198,7 @@ namespace NdgrClientSharp.NdgrApi
 
             while (true)
             {
-                var buffer = pool.Rent(1024);
+                var buffer = pool.Rent(2048);
                 int read;
                 try
                 {
@@ -199,7 +212,7 @@ namespace NdgrClientSharp.NdgrApi
 
                 if (read == 0)
                 {
-                    pool.Return(buffer); 
+                    pool.Return(buffer);
                     yield break;
                 }
 
@@ -210,13 +223,10 @@ namespace NdgrClientSharp.NdgrApi
         /// <summary>
         /// Streamを「ProtoBuffのメッセージとして解釈可能なバイト配列単位」で読み取る
         /// </summary>
-        private static async IAsyncEnumerable<(byte[] message, int messageSize)> ReadProtoBuffBytesAsync(
+        private static async IAsyncEnumerable<PooledBuffer> ReadProtoBuffBytesAsync(
             Stream stream,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
-            // 正常に動作している場合はこのサイズで十分足りるはずであり、オーバーする場合は受信したデータが破損している可能性がある
-            using var messageBuffer = new PooledArray<byte>(1024);
-
             using var reader = new NdgrProtobufStreamReader();
             await foreach (var chunk in ReadRawBytesAsync(stream).WithCancellation(ct))
             {
@@ -230,13 +240,15 @@ namespace NdgrClientSharp.NdgrApi
                     chunk.Dispose();
                 }
 
+                var pool = ArrayPool<byte>.Shared;
                 while (true)
                 {
                     int size;
+                    var buffer = pool.Rent(1024);
                     try
                     {
                         bool isValid;
-                        (isValid, size) = reader.UnshiftChunk(messageBuffer.Array);
+                        (isValid, size) = reader.UnshiftChunk(buffer);
                         if (!isValid)
                         {
                             break;
@@ -244,10 +256,11 @@ namespace NdgrClientSharp.NdgrApi
                     }
                     catch (NdgrProtobufStreamReaderException)
                     {
+                        pool.Return(buffer);
                         throw new NdgrApiClientByteReadException("Failed to read varint from the stream.");
                     }
 
-                    yield return (messageBuffer.Array, size);
+                    yield return new PooledBuffer(buffer, size, pool);
                 }
             }
         }

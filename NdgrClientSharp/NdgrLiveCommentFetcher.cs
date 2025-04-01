@@ -449,6 +449,18 @@ namespace NdgrClientSharp
                 {
                     throw;
                 }
+                catch (NdgrApiClientHttpException e)
+                {
+                    lock (_gate)
+                    {
+                        if (!_messageSubject.IsDisposed)
+                        {
+                            _messageSubject.OnErrorResume(e);
+                        }
+                    }
+
+                    await Task.Delay(RetryInterval, ct);
+                }
                 catch (NdgrApiClientByteReadException e)
                 {
                     lock (_gate)
